@@ -303,6 +303,7 @@
 
         <div class="actions" style="margin:10px 0 12px">
           <button id="btnExportSalesCSV" class="secondary">Export Laporan Penjualan (Excel .CSV)</button>
+          <button id="btnExportReturCSV" class="secondary">Export Laporan Retur (Excel .CSV)</button>
         </div>
 
         <table>
@@ -1034,6 +1035,10 @@ document.querySelectorAll('button[data-qadd]').forEach(b=>{
       const data = JSON.parse(text);
       if (!data.products || !data.transactions || !data.cart) throw new Error("Format JSON tidak sesuai");
       state = data;
+      // migration for older export files
+      state.returns = Array.isArray(state.returns) ? state.returns : [];
+      state.settings = (state.settings && typeof state.settings === "object") ? state.settings : (state.settings || {});
+      state.settings.payMethod = state.settings.payMethod || "CASH";
       saveState(); renderAll();
       alert("Import sukses!");
     }catch(e){
@@ -1115,6 +1120,40 @@ document.querySelectorAll('button[data-qadd]').forEach(b=>{
     const filename = `laporan-penjualan-${todayKey()}.csv`;
     downloadCSV(filename, rows);
   };
+
+  // ===== Export Laporan Retur ke Excel (CSV) =====
+  document.getElementById("btnExportReturCSV").onclick = () => {
+    if (!state.returns || state.returns.length === 0){
+      alert("Belum ada data retur untuk diexport.");
+      return;
+    }
+
+    const rows = [];
+    rows.push([
+      "retur_id",
+      "datetime",
+      "date",
+      "product_name",
+      "qty_retur",
+      "note"
+    ]);
+
+    state.returns.forEach(r => {
+      const dt = new Date(r.createdAt);
+      rows.push([
+        r.id,
+        dt.toLocaleString("id-ID"),
+        dt.toISOString().slice(0,10),
+        r.productName ?? "",
+        r.qty ?? 0,
+        r.note ?? ""
+      ]);
+    });
+
+    const filename = `laporan-retur-${todayKey()}.csv`;
+    downloadCSV(filename, rows);
+  };
+
 
   // ===== Render All =====
   function renderAll(){
