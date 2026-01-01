@@ -157,7 +157,15 @@
         <div style="min-width:260px">
           <label>Bayar (Rp)</label>
           <input id="payAmount" type="number" min="0" placeholder="0" />
-          <div class="quickRow" style="margin-top:10px">
+          
+          <label style="margin-top:10px">Metode Bayar</label>
+          <div class="quickRow" id="payMethodRow">
+            <button class="primary" data-method="CASH">CASH</button>
+            <button data-method="QRIS">QRIS</button>
+            <button data-method="DEBET">DEBET</button>
+          </div>
+          <div class="muted" id="payMethodHint" style="margin-top:6px"></div>
+<div class="quickRow" style="margin-top:10px">
             <button data-pay="20000">20k</button>
             <button data-pay="50000">50k</button>
             <button data-pay="100000">100k</button>
@@ -216,7 +224,49 @@
         </div>
       </div>
 
+      
       <div style="margin-top:14px">
+        <h2>RETUR ke Supplier</h2>
+        <div class="muted">Gunakan saat stok berlebih dan mau dibalikin ke pengirim. Stok akan berkurang sesuai qty retur.</div>
+
+        <div class="row" style="margin-top:10px">
+          <div style="flex:2;min-width:220px">
+            <label>Pilih Produk</label>
+            <select id="retProduct"></select>
+          </div>
+          <div>
+            <label>Qty Retur</label>
+            <input id="retQty" type="number" min="1" placeholder="1" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px">
+          <div style="flex:2;min-width:220px">
+            <label>Catatan (opsional)</label>
+            <input id="retNote" placeholder="Contoh: retur ke supplier A / alasan" />
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button id="btnRetur" class="danger" style="width:100%">Proses Retur</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <h2>Riwayat Retur</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Waktu</th>
+                <th>Produk</th>
+                <th class="right">Qty</th>
+                <th>Catatan</th>
+              </tr>
+            </thead>
+            <tbody id="retBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+<div style="margin-top:14px">
         <h2>Daftar Produk</h2>
         <table>
           <thead>
@@ -260,6 +310,7 @@
             <tr>
               <th>Waktu</th>
               <th>Items</th>
+              <th>Metode</th>
               <th class="right">Total</th>
             </tr>
           </thead>
@@ -304,12 +355,22 @@
   function loadState() {
     const raw = localStorage.getItem(KEY);
     if (raw) return JSON.parse(raw);
-    return { products: [], transactions: [], cart: [] };
+    return { products: [], transactions: [], cart: [], returns: [], settings: { payMethod: "CASH" } };
   }
   function saveState(){ localStorage.setItem(KEY, JSON.stringify(state)); }
   let state = loadState();
 
-  // ===== DOM =====
+  
+  // ===== Migration / defaults (biar aman kalau storage lama) =====
+  if (!state || typeof state !== "object") state = { products: [], transactions: [], cart: [], returns: [], settings: { payMethod: "CASH" } };
+  state.products = Array.isArray(state.products) ? state.products : [];
+  state.transactions = Array.isArray(state.transactions) ? state.transactions : [];
+  state.cart = Array.isArray(state.cart) ? state.cart : [];
+  state.returns = Array.isArray(state.returns) ? state.returns : [];
+  state.settings = (state.settings && typeof state.settings === "object") ? state.settings : {};
+  state.settings.payMethod = state.settings.payMethod || "CASH";
+
+// ===== DOM =====
   const tabPos = document.getElementById("tabPos");
   const tabProduk = document.getElementById("tabProduk");
   const tabLaporan = document.getElementById("tabLaporan");
@@ -328,6 +389,9 @@
   const cartBody = document.getElementById("cartBody");
   const cartTotal = document.getElementById("cartTotal");
   const payAmount = document.getElementById("payAmount");
+  const payMethodRow = document.getElementById("payMethodRow");
+  const payMethodHint = document.getElementById("payMethodHint");
+
   const changeHint = document.getElementById("changeHint");
   const checkoutMsg = document.getElementById("checkoutMsg");
 
@@ -337,6 +401,11 @@
   const pStock = document.getElementById("pStock");
   const bulkInput = document.getElementById("bulkInput");
   const productBody = document.getElementById("productBody");
+
+  const retProduct = document.getElementById("retProduct");
+  const retQty = document.getElementById("retQty");
+  const retNote = document.getElementById("retNote");
+  const retBody = document.getElementById("retBody");
 
   const salesToday = document.getElementById("salesToday");
   const txToday = document.getElementById("txToday");
@@ -376,7 +445,50 @@
   let activeCategory = "Semua";
   let quickAddQty = 1;
 
-  document.querySelectorAll('button[data-qadd]').forEach(b=>{
+  // ===== Payment Method (CASH / QRIS / DEBET) =====
+  const PAYMENT_METHODS = ["CASH", "QRIS", "DEBET"];
+  let payMethod = (state.settings && state.settings.payMethod) ? state.settings.payMethod : "CASH";
+
+  function setPayMethod(m){
+    if (!PAYMENT_METHODS.includes(m)) m = "CASH";
+    payMethod = m;
+    state.settings = state.settings || {};
+    state.settings.payMethod = m;
+    saveState();
+
+    // Update UI
+    if (payMethodRow){
+      payMethodRow.querySelectorAll("button[data-method]").forEach(btn=>{
+        btn.classList.toggle("primary", btn.dataset.method === m);
+      });
+    }
+
+    // Behavior:
+    // - CASH: input bayar bisa diisi manual + quick pay aktif
+    // - QRIS/DEBET: bayar = total otomatis (kembalian 0)
+    const isCash = (m === "CASH");
+    payAmount.disabled = !isCash;
+
+    document.querySelectorAll("button[data-pay]").forEach(b=> b.disabled = !isCash);
+    const btnExact = document.getElementById("btnPayExact");
+    if (btnExact) btnExact.disabled = !isCash;
+
+    if (!isCash){
+      payAmount.value = cartSum();
+      changeHint.textContent = "";
+      if (payMethodHint) payMethodHint.textContent = "Non-cash: bayar otomatis = total (kembalian 0).";
+    } else {
+      if (payMethodHint) payMethodHint.textContent = "";
+      updateChangeHint();
+    }
+  }
+
+  if (payMethodRow){
+    payMethodRow.querySelectorAll("button[data-method]").forEach(btn=>{
+      btn.onclick = () => setPayMethod(btn.dataset.method);
+    });
+  }
+document.querySelectorAll('button[data-qadd]').forEach(b=>{
     b.onclick = () => {
       quickAddQty = Number(b.dataset.qadd || 1);
       document.querySelectorAll('button[data-qadd]').forEach(x=>{
@@ -490,7 +602,7 @@
     saveState();
     renderCart();
     renderPOSGrid();
-    updateChangeHint();
+    setPayMethod(payMethod);
   }
 
   // ===== Cart =====
@@ -537,8 +649,8 @@
         const p = getProduct(it.productId);
         if (p && it.qty + 1 > p.stock) return;
         it.qty += 1;
-        saveState(); renderCart(); renderPOSGrid(); updateChangeHint();
-      };
+        saveState(); renderCart(); renderPOSGrid(); setPayMethod(payMethod);
+  };
     });
 
     cartBody.querySelectorAll("button[data-dec]").forEach(btn=>{
@@ -548,7 +660,7 @@
         if (!it) return;
         it.qty -= 1;
         if (it.qty <= 0) state.cart = state.cart.filter(x=>x.id!==id);
-        saveState(); renderCart(); renderPOSGrid(); updateChangeHint();
+        saveState(); renderCart(); renderPOSGrid(); setPayMethod(payMethod);
       };
     });
 
@@ -556,7 +668,7 @@
       btn.onclick = () => {
         const id = btn.dataset.del;
         state.cart = state.cart.filter(x=>x.id!==id);
-        saveState(); renderCart(); renderPOSGrid(); updateChangeHint();
+        saveState(); renderCart(); renderPOSGrid(); setPayMethod(payMethod);
       };
     });
 
@@ -565,6 +677,13 @@
 
   function updateChangeHint(){
     const total = cartSum();
+    const isCash = (payMethod === "CASH");
+
+    if (!isCash){
+      changeHint.textContent = total ? "Non-cash: kembalian Rp0" : "";
+      return;
+    }
+
     const pay = Number(payAmount.value || 0);
     if (!total || !pay) { changeHint.textContent = ""; return; }
     const diff = pay - total;
@@ -581,16 +700,24 @@
     state.cart = [];
     payAmount.value = "";
     checkoutMsg.textContent = "";
-    saveState(); renderCart(); renderPOSGrid(); updateChangeHint();
-  };
+    saveState(); renderCart(); renderPOSGrid(); setPayMethod(payMethod);
+      };
 
   document.getElementById("btnCheckout").onclick = () => {
     checkoutMsg.textContent = "";
     if (state.cart.length===0){ checkoutMsg.textContent = "Keranjang masih kosong."; return; }
 
     const total = cartSum();
-    const pay = Number(payAmount.value || 0);
-    if (pay < total){
+    const isCash = (payMethod === "CASH");
+
+    let pay = Number(payAmount.value || 0);
+    if (!isCash){
+      // QRIS / DEBET
+      pay = total;
+      payAmount.value = total;
+    }
+
+    if (isCash && pay < total){
       checkoutMsg.textContent = `Uang bayar kurang. Total ${fmt(total)}.`;
       return;
     }
@@ -608,11 +735,12 @@
       p.stock -= it.qty;
     }
 
-    const change = pay - total;
+    const change = isCash ? (pay - total) : 0;
     const tx = {
       id: uid(),
       createdAt: Date.now(),
       dateKey: todayKey(),
+      paymentMethod: payMethod,
       items: state.cart.map(x=>({ name:x.name, qty:x.qty, price:x.price })),
       total, paid: pay, change
     };
@@ -623,7 +751,7 @@
     saveState();
     renderAll();
 
-    checkoutMsg.textContent = `Transaksi sukses ✅ Kembalian: ${fmt(change)}`;
+    checkoutMsg.textContent = `Transaksi sukses ✅ Metode: ${payMethod}${isCash ? ` • Kembalian: ${fmt(change)}` : ""}`;
   };
 
   // ===== Produk =====
@@ -771,6 +899,88 @@
     });
   }
 
+  // ===== RETUR =====
+  function renderReturUI(){
+    if (!retProduct) return;
+
+    // dropdown produk
+    retProduct.innerHTML = "";
+    const active = state.products.filter(p => p.is_active !== false);
+    if (active.length === 0){
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Belum ada produk";
+      retProduct.appendChild(opt);
+      return;
+    }
+
+    active.slice().sort((a,b)=> (a.name||"").localeCompare(b.name||"")).forEach(p=>{
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = `${p.name} (stok: ${p.stock})`;
+      retProduct.appendChild(opt);
+    });
+  }
+
+  function renderReturTable(){
+    if (!retBody) return;
+    retBody.innerHTML = "";
+
+    if (!state.returns || state.returns.length === 0){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan="4" class="muted">Belum ada retur.</td>`;
+      retBody.appendChild(tr);
+      return;
+    }
+
+    state.returns.slice().reverse().forEach(r=>{
+      const tr = document.createElement("tr");
+      const time = new Date(r.createdAt).toLocaleString("id-ID");
+      tr.innerHTML = `
+        <td class="mono">${time}</td>
+        <td><strong>${r.productName || "-"}</strong></td>
+        <td class="right mono">${r.qty || 0}</td>
+        <td>${r.note ? String(r.note) : ""}</td>
+      `;
+      retBody.appendChild(tr);
+    });
+  }
+
+  const btnRetur = document.getElementById("btnRetur");
+  if (btnRetur){
+    btnRetur.onclick = () => {
+      const pid = (retProduct && retProduct.value) ? retProduct.value : "";
+      const qty = Math.max(1, Number(retQty && retQty.value ? retQty.value : 0));
+      const note = (retNote && retNote.value) ? retNote.value.trim() : "";
+
+      if (!pid){ alert("Pilih produk dulu."); return; }
+      const p = getProduct(pid);
+      if (!p){ alert("Produk tidak ditemukan."); return; }
+      if (!isFinite(qty) || qty <= 0){ alert("Qty retur tidak valid."); return; }
+      if (qty > (Number(p.stock)||0)){ alert(`Qty retur melebihi stok. Stok ${p.stock}`); return; }
+
+      if (!confirm(`Retur ${p.name} sebanyak ${qty}? Stok akan berkurang.`)) return;
+
+      p.stock -= qty;
+      state.returns.push({
+        id: uid(),
+        createdAt: Date.now(),
+        productId: pid,
+        productName: p.name,
+        qty,
+        note
+      });
+
+      if (retQty) retQty.value = "";
+      if (retNote) retNote.value = "";
+
+      saveState();
+      renderAll();
+      alert("Retur tersimpan ✅");
+    };
+  }
+
+
   // ===== Reports =====
   function renderReports(){
     const tKey = todayKey();
@@ -782,7 +992,7 @@
     txBody.innerHTML = "";
     if (state.transactions.length===0){
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="3" class="muted">Belum ada transaksi.</td>`;
+      tr.innerHTML = `<td colspan="4" class="muted">Belum ada transaksi.</td>`;
       txBody.appendChild(tr);
       return;
     }
@@ -791,9 +1001,11 @@
       const tr = document.createElement("tr");
       const time = new Date(tx.createdAt).toLocaleString("id-ID");
       const items = (tx.items||[]).map(i=>`${i.name}×${i.qty}`).join(", ");
+      const method = tx.paymentMethod || "CASH";
       tr.innerHTML = `
         <td class="mono">${time}</td>
         <td>${items}</td>
+        <td><span class="pill">${method}</span></td>
         <td class="right mono">${fmt(tx.total)}</td>
       `;
       txBody.appendChild(tr);
@@ -869,6 +1081,7 @@
       "total",
       "paid",
       "change",
+      "payment_method",
       "item_name",
       "item_qty",
       "item_price",
@@ -890,6 +1103,7 @@
           tx.total ?? 0,
           tx.paid ?? 0,
           tx.change ?? 0,
+          (tx.paymentMethod || "CASH"),
           it.name ?? "",
           qty,
           price,
@@ -909,8 +1123,10 @@
     renderPOSGrid();
     renderCart();
     renderProductsTable();
+    renderReturUI();
+    renderReturTable();
     renderReports();
-    updateChangeHint();
+    setPayMethod(payMethod);
   }
 
   // init
